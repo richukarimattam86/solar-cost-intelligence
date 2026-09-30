@@ -125,13 +125,13 @@ def parse_cme(uploaded):
         d["volume"]=pd.to_numeric(d["volume"],errors="coerce")
     return d.dropna(subset=["contract_month","last_usd_per_short_ton"]).sort_values("contract_month")
 
-st.title("Solar EPC Cost & Commodity Intelligence — V3")
+st.title("Solar EPC Cost & Commodity Intelligence — V3.1")
 st.caption("Three-year history, forecast scenarios, forward pricing, vendor quotes and project exposure for solar preconstruction.")
 
 with st.sidebar:
     st.header("Dashboard controls")
-    history_years=st.selectbox("Historical window", [1,3,5], index=1)
-    forecast_horizon=st.selectbox("Forecast horizon", [6,12,18,24], index=1)
+    history_years=st.selectbox("Historical window", [1,3,5], index=1, format_func=lambda x: f"{x} Year" if x == 1 else f"{x} Years")
+    forecast_horizon=st.selectbox("Forecast horizon", [6,12,18,24], index=1, format_func=lambda x: f"{x} Months")
     quote_upload=st.file_uploader("Upload component/vendor quotes CSV",type="csv")
     project_upload=st.file_uploader("Upload project cost mix CSV",type="csv")
     cme_upload=st.file_uploader("Upload refreshed CME HRC curve CSV",type="csv")
@@ -145,13 +145,14 @@ except Exception as e:
     cme=DEFAULT_CME.copy()
 
 tabs=st.tabs([
-    "Executive dashboard","3-Year history + forecast","3-Year comparison",
+    "Executive dashboard","History + forecast","Historical comparison",
     "Commodities","Labor","Modules","Inverters","Gear & transformers",
     "BOS","Project exposure","Quote tracker","Sources"
 ])
 
 with tabs[0]:
     st.subheader("Market pulse")
+    st.caption("Values below are BLS/FRED index levels, not dollars. Percentage figures show changes in those indexes. CME HRC is displayed separately in USD/short ton.")
     pulse_names=[
         "Steel — structural shapes/plate","Copper wire & cable","Construction labor — wages",
         "Switchgear & switchboards","Transformers — power & distribution"
@@ -185,6 +186,7 @@ with tabs[0]:
 
 with tabs[1]:
     st.subheader("Historical actuals + forecast")
+    st.caption("Historical window is measured in years; forecast horizon is measured in months. Public BLS/FRED series are indexes, while CME HRC is shown separately in USD/short ton.")
     choice=st.selectbox("Cost driver",list(BENCHMARKS.keys()),index=1,key="hist_fc_choice")
     sid,unit,source,freq=BENCHMARKS[choice]
     d=fred(sid)
@@ -200,7 +202,7 @@ with tabs[1]:
     b.metric("YoY change","—" if pd.isna(yoy) else f"{yoy:+.1f}%")
     c.metric("3-year change","—" if pd.isna(t3) else f"{t3:+.1f}%")
     f_end=pct(fc.iloc[-1]["forecast"],latest) if len(fc) else np.nan
-    dcol.metric(f"{forecast_horizon}M model change","—" if pd.isna(f_end) else f"{f_end:+.1f}%")
+    dcol.metric(f"{forecast_horizon}-month forecast change","—" if pd.isna(f_end) else f"{f_end:+.1f}%")
 
     fig=go.Figure()
     fig.add_trace(go.Scatter(x=hist["date"],y=hist["value"],mode="lines+markers",name="Historical actual"))
@@ -222,8 +224,8 @@ with tabs[1]:
     st.warning("The forecast is a transparent statistical extrapolation based on recent trend + seasonality. Use it for planning ranges, not as a guaranteed procurement price.")
 
 with tabs[2]:
-    st.subheader("3-Year normalized comparison")
-    st.caption("All selected series are rebased to 100 at the start so you can compare percentage movement across different indexes.")
+    st.subheader(f"{history_years}-Year normalized comparison")
+    st.caption(f"Selected series are rebased to 100 at the start of the {history_years}-year window so percentage movement can be compared across different indexes.")
     default_sel=["Steel — structural shapes/plate","Copper wire & cable","Construction labor — wages","Switchgear & switchboards","Transformers — power & distribution"]
     selected=st.multiselect("Compare cost drivers",list(BENCHMARKS.keys()),default=default_sel)
     fig=go.Figure()
@@ -232,7 +234,7 @@ with tabs[2]:
         sid,unit,source,freq=BENCHMARKS[name]
         try:
             d=fred(sid)
-            n=36 if freq=="monthly" else 12
+            n = (12 if history_years==1 else 36 if history_years==3 else 60) if freq=="monthly" else (4 if history_years==1 else 12 if history_years==3 else 20)
             v=d.tail(n).copy()
             if len(v):
                 v["normalized"]=v["value"]/v.iloc[0]["value"]*100
@@ -242,9 +244,10 @@ with tabs[2]:
             pass
     fig.update_layout(yaxis_title="Rebased index (start = 100)",xaxis_title=None,hovermode="x unified")
     st.plotly_chart(fig,use_container_width=True)
-    cr=pd.DataFrame(compare_rows,columns=["Cost driver","3Y move %"]).sort_values("3Y move %",ascending=False)
+    move_col=f"{history_years}Y move %"
+    cr=pd.DataFrame(compare_rows,columns=["Cost driver",move_col]).sort_values(move_col,ascending=False)
     if len(cr):
-        cr["3Y move %"]=cr["3Y move %"].round(1)
+        cr[move_col]=cr[move_col].round(1)
     st.dataframe(cr,use_container_width=True,hide_index=True)
 
 with tabs[3]:
@@ -262,7 +265,8 @@ with tabs[4]:
     st.subheader("Construction labor escalation")
     sid,unit,_,freq=BENCHMARKS["Construction labor — wages"]
     d=fred(sid)
-    fig=px.line(d.tail(12),x="date",y="value",markers=True,title="Construction wages — 3-year quarterly history")
+    labor_n = 4 if history_years==1 else 12 if history_years==3 else 20
+    fig=px.line(d.tail(labor_n),x="date",y="value",markers=True,title=f"Construction wages — {history_years}-year quarterly history")
     fig.update_layout(yaxis_title=unit,xaxis_title=None,hovermode="x unified")
     st.plotly_chart(fig,use_container_width=True)
     st.metric("Year-over-year labor escalation","—" if pd.isna(yoy_change(d,freq)) else f"{yoy_change(d,freq):+.1f}%")
@@ -270,21 +274,23 @@ with tabs[4]:
 
 with tabs[5]:
     st.subheader("Modules — U.S. vs non-U.S.")
-    st.info("Actual module quote history is kept separate from broad public market indexes. Upload vendor quote history as you collect it.")
+    st.info("MODULE PRICING: Vendor quotes are the real $/Wdc pricing source. The public chart below is only a broad trade-price context index and is NOT a module $/W price.")
     mq=quotes[quotes["category"].astype(str).str.lower()=="module"].copy()
     st.data_editor(mq,use_container_width=True,hide_index=True,num_rows="dynamic")
     sid,unit,_,freq=BENCHMARKS["PV/semiconductor trade context"]
     d=fred(sid)
-    fig=px.line(d.tail(36),x="date",y="value",markers=True,title="PV / semiconductor trade-price context — 3 years")
+    proxy_n = 12 if history_years==1 else 36 if history_years==3 else 60
+    fig=px.line(d.tail(proxy_n),x="date",y="value",markers=True,title=f"PV / semiconductor trade-price context — {history_years} years")
     fig.update_layout(yaxis_title=unit,xaxis_title=None)
     st.plotly_chart(fig,use_container_width=True)
 
 with tabs[6]:
     st.subheader("Inverters")
-    st.warning("The public electronics index is context only; actual utility-scale inverter bids should be tracked in $/Wac or $/kWac.")
+    st.warning("INVERTER PRICING: The chart below is a BLS/FRED electronics index, not an inverter price. Actual utility-scale inverter bids should be tracked in $/Wac or $/kWac.")
     sid,unit,_,freq=BENCHMARKS["Electronic components — inverter context"]
     d=fred(sid)
-    fig=px.line(d.tail(36),x="date",y="value",markers=True,title="Electronic components — 3-year context")
+    inv_n = 12 if history_years==1 else 36 if history_years==3 else 60
+    fig=px.line(d.tail(inv_n),x="date",y="value",markers=True,title=f"Electronic components — {history_years}-year context")
     fig.update_layout(yaxis_title=unit,xaxis_title=None)
     st.plotly_chart(fig,use_container_width=True)
     st.dataframe(quotes[quotes["category"].astype(str).str.lower()=="inverter"],use_container_width=True,hide_index=True)
@@ -295,12 +301,13 @@ with tabs[7]:
     sid,unit,_,freq=BENCHMARKS[equip]
     d=fred(sid)
     fc=seasonal_trend_forecast(d,freq,forecast_horizon)
-    hist=d.tail(36)
+    gear_n = 12 if history_years==1 else 36 if history_years==3 else 60
+    hist=d.tail(gear_n)
     fig=go.Figure()
     fig.add_trace(go.Scatter(x=hist["date"],y=hist["value"],mode="lines+markers",name="Actual"))
     if len(fc):
         fig.add_trace(go.Scatter(x=fc["date"],y=fc["forecast"],mode="lines+markers",line=dict(dash="dash"),name="Forecast"))
-    fig.update_layout(title=f"{equip}: 3-year history + {forecast_horizon}M forecast",yaxis_title=unit,xaxis_title=None,hovermode="x unified")
+    fig.update_layout(title=f"{equip}: {history_years}-year history + {forecast_horizon}-month forecast",yaxis_title=unit,xaxis_title=None,hovermode="x unified")
     st.plotly_chart(fig,use_container_width=True)
 
 with tabs[8]:
@@ -362,4 +369,4 @@ with tabs[11]:
     st.caption("Public indexes are escalation benchmarks. Vendor/EPC quotes establish project-specific pricing.")
 
 st.divider()
-st.caption("Planning dashboard only. Forecasts are statistical scenarios, not guaranteed commodity or equipment prices.")
+st.caption("Units: BLS/FRED series = index levels; CME HRC = USD/short ton; modules = $/Wdc; inverters = $/Wac or $/kWac; project cost stack = $/Wdc. Forecasts are statistical planning scenarios, not guaranteed prices.")
