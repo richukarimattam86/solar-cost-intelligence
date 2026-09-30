@@ -7,18 +7,18 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Solar EPC Cost Intelligence", page_icon="☀️", layout="wide")
+st.set_page_config(page_title="Solar EPC Cost Intelligence V3", page_icon="☀️", layout="wide")
 
 BENCHMARKS = {
-    "Steel — finished products": ("WPUSISTEEL2", "Index 1982=100", "BLS/FRED", "Direct public benchmark"),
-    "Steel — structural shapes/plate": ("WPU101704", "Index Jun 1982=100", "BLS/FRED", "Direct public benchmark"),
-    "Copper wire & cable": ("WPU10260314", "Index Dec 1986=100", "BLS/FRED", "Direct public benchmark"),
-    "Construction labor — wages": ("ECICONWAG", "Index Dec 2005=100", "BLS/FRED", "Broad construction labor benchmark"),
-    "Switchgear & switchboards": ("WPU117522", "Index Jun 2005=100", "BLS/FRED", "Direct public equipment benchmark"),
-    "Switchgear — excluding relays/ducts": ("WPU11752201A", "Index Dec 2007=100", "BLS/FRED", "Direct public equipment benchmark"),
-    "Transformers — power & distribution": ("WPU117409", "Index Dec 1999=100", "BLS/FRED", "Direct public equipment benchmark"),
-    "Electronic components — inverter context": ("PCU33443344", "Index Dec 1984=100", "BLS/FRED", "Proxy only — not an inverter quote"),
-    "PV/semiconductor trade context": ("ID8541", "Index Dec 2017=100", "BLS/FRED", "Proxy only — not a module $/W quote"),
+    "Steel — finished products": ("WPUSISTEEL2", "Index 1982=100", "BLS/FRED", "monthly"),
+    "Steel — structural shapes/plate": ("WPU101704", "Index Jun 1982=100", "BLS/FRED", "monthly"),
+    "Copper wire & cable": ("WPU10260314", "Index Dec 1986=100", "BLS/FRED", "monthly"),
+    "Construction labor — wages": ("ECICONWAG", "Index Dec 2005=100", "BLS/FRED", "quarterly"),
+    "Switchgear & switchboards": ("WPU117522", "Index Jun 2005=100", "BLS/FRED", "monthly"),
+    "Switchgear — excluding relays/ducts": ("WPU11752201A", "Index Dec 2007=100", "BLS/FRED", "monthly"),
+    "Transformers — power & distribution": ("WPU117409", "Index Dec 1999=100", "BLS/FRED", "monthly"),
+    "Electronic components — inverter context": ("PCU33443344", "Index Dec 1984=100", "BLS/FRED", "monthly"),
+    "PV/semiconductor trade context": ("ID8541", "Index Dec 2017=100", "BLS/FRED", "monthly"),
 }
 
 DEFAULT_QUOTES = pd.DataFrame([
@@ -34,165 +34,303 @@ DEFAULT_PROJECTS = pd.DataFrame([
     ["Example 5 MWdc",5.0,0.28,0.07,0.10,0.12,0.08,0.15,0.20],
 ], columns=["project","mw_dc","modules","inverters","racking_steel","wire_copper_al","gear_transformers","labor","other_bos"])
 
+DEFAULT_CME = pd.DataFrame({
+    "contract_month": pd.to_datetime(["2026-10-01","2026-11-01","2026-12-01","2027-01-01","2027-03-01","2027-07-01"]),
+    "last_usd_per_short_ton": [1285,1323,1330,1333,1279,1190],
+    "volume": [24,65,12,2,7,5],
+    "source_date": ["2026-09-25"]*6,
+    "contract": ["HRCV6","HRCX6","HRCZ6","HRCF7","HRCH7","HRCN7"],
+})
+
 @st.cache_data(ttl=3600)
 def fred(series):
     url=f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}"
-    r=requests.get(url,timeout=20); r.raise_for_status()
+    r=requests.get(url,timeout=20)
+    r.raise_for_status()
     d=pd.read_csv(io.StringIO(r.text))
-    d.columns=["date","value"]; d["date"]=pd.to_datetime(d["date"])
+    d.columns=["date","value"]
+    d["date"]=pd.to_datetime(d["date"])
     d["value"]=pd.to_numeric(d["value"],errors="coerce")
     return d.dropna().sort_values("date")
 
-def changes(d):
-    v=d["value"].dropna()
-    latest=v.iloc[-1]
-    one=v.iloc[-2] if len(v)>1 else np.nan
-    three=v.iloc[-4] if len(v)>3 else np.nan
-    twelve=v.iloc[-13] if len(v)>12 else np.nan
-    def pc(old): return (latest/old-1)*100 if pd.notna(old) and old else np.nan
-    return latest,pc(one),pc(three),pc(twelve)
+def pct(a,b):
+    if pd.isna(a) or pd.isna(b) or b == 0:
+        return np.nan
+    return (a/b-1)*100
 
-def signal(p1,p3,p12):
-    vals=[x for x in [p1,p3,p12] if pd.notna(x)]
-    if not vals:return "Insufficient data"
-    score=np.mean([np.sign(x) for x in vals])
-    if score>.35:return "Rising"
-    if score<-.35:return "Falling"
-    return "Mixed / stable"
+def latest_period_change(d):
+    return pct(d.iloc[-1]["value"], d.iloc[-2]["value"]) if len(d) > 1 else np.nan
 
-st.title("Solar EPC Cost & Commodity Intelligence")
-st.caption("Procurement dashboard for utility-scale / C&I solar: commodities, labor, equipment, vendor quotes and project exposure.")
+def yoy_change(d, frequency):
+    lag = 12 if frequency=="monthly" else 4
+    return pct(d.iloc[-1]["value"], d.iloc[-1-lag]["value"]) if len(d) > lag else np.nan
+
+def three_year_change(d, frequency):
+    lag = 36 if frequency=="monthly" else 12
+    return pct(d.iloc[-1]["value"], d.iloc[-1-lag]["value"]) if len(d) > lag else np.nan
+
+def trend_label(v):
+    if pd.isna(v): return "Insufficient data"
+    if v > 2: return "Rising"
+    if v < -2: return "Falling"
+    return "Stable / mixed"
+
+def seasonal_trend_forecast(df, frequency="monthly", periods=12):
+    d=df.copy().sort_values("date")
+    n_recent = 60 if frequency=="monthly" else 24
+    recent=d.tail(min(n_recent, len(d))).copy()
+    y=recent["value"].values.astype(float)
+    x=np.arange(len(y), dtype=float)
+    if len(y) < 4:
+        return pd.DataFrame()
+    slope, intercept=np.polyfit(x,y,1)
+    trend=intercept+slope*x
+    resid=y-trend
+    if frequency=="monthly":
+        keys=recent["date"].dt.month.values
+        future_dates=pd.date_range(recent["date"].max()+pd.offsets.MonthBegin(1), periods=periods, freq="MS")
+        future_keys=future_dates.month
+    else:
+        keys=recent["date"].dt.quarter.values
+        future_dates=pd.date_range(recent["date"].max()+pd.offsets.QuarterBegin(startingMonth=1), periods=periods, freq="QS")
+        future_keys=future_dates.quarter
+    season_map={}
+    for k in sorted(set(keys)):
+        vals=resid[keys==k]
+        season_map[int(k)] = float(np.mean(vals)) if len(vals) else 0.0
+    fx=np.arange(len(y), len(y)+periods, dtype=float)
+    base=intercept+slope*fx
+    seasonal=np.array([season_map.get(int(k),0.0) for k in future_keys])
+    forecast=base+seasonal
+    sigma=float(np.nanstd(resid,ddof=1)) if len(resid)>2 else 0.0
+    h=np.arange(1,periods+1)
+    band=1.96*sigma*np.sqrt(1+h/max(len(y),1))
+    return pd.DataFrame({
+        "date": future_dates,
+        "forecast": forecast,
+        "lower": forecast-band,
+        "upper": forecast+band,
+    })
+
+def parse_cme(uploaded):
+    if uploaded is None:
+        return DEFAULT_CME.copy()
+    d=pd.read_csv(uploaded)
+    req={"contract_month","last_usd_per_short_ton"}
+    if not req.issubset(d.columns):
+        raise ValueError("CME CSV requires contract_month and last_usd_per_short_ton.")
+    d["contract_month"]=pd.to_datetime(d["contract_month"])
+    d["last_usd_per_short_ton"]=pd.to_numeric(d["last_usd_per_short_ton"],errors="coerce")
+    if "volume" in d.columns:
+        d["volume"]=pd.to_numeric(d["volume"],errors="coerce")
+    return d.dropna(subset=["contract_month","last_usd_per_short_ton"]).sort_values("contract_month")
+
+st.title("Solar EPC Cost & Commodity Intelligence — V3")
+st.caption("Three-year history, forecast scenarios, forward pricing, vendor quotes and project exposure for solar preconstruction.")
 
 with st.sidebar:
-    st.header("Portfolio controls")
-    months=st.slider("History shown",12,120,36,6)
-    st.caption("Public benchmarks refresh from FRED/BLS. Vendor pricing is intentionally maintained separately.")
-    quote_upload=st.file_uploader("Upload vendor/component quotes CSV",type="csv")
+    st.header("Dashboard controls")
+    history_years=st.selectbox("Historical window", [1,3,5], index=1)
+    forecast_horizon=st.selectbox("Forecast horizon", [6,12,18,24], index=1)
+    quote_upload=st.file_uploader("Upload component/vendor quotes CSV",type="csv")
     project_upload=st.file_uploader("Upload project cost mix CSV",type="csv")
+    cme_upload=st.file_uploader("Upload refreshed CME HRC curve CSV",type="csv")
 
 quotes=pd.read_csv(quote_upload) if quote_upload else DEFAULT_QUOTES.copy()
 projects=pd.read_csv(project_upload) if project_upload else DEFAULT_PROJECTS.copy()
+try:
+    cme=parse_cme(cme_upload)
+except Exception as e:
+    st.error(str(e))
+    cme=DEFAULT_CME.copy()
 
-tabs=st.tabs(["Executive dashboard","Commodities","Labor","Modules","Inverters","Gear & transformers","BOS","Project exposure","Quote tracker","Sources"])
+tabs=st.tabs([
+    "Executive dashboard","3-Year history + forecast","3-Year comparison",
+    "Commodities","Labor","Modules","Inverters","Gear & transformers",
+    "BOS","Project exposure","Quote tracker","Sources"
+])
 
 with tabs[0]:
     st.subheader("Market pulse")
-    cards=[]
-    for name in ["Steel — structural shapes/plate","Copper wire & cable","Construction labor — wages","Switchgear & switchboards","Transformers — power & distribution"]:
-        sid,unit,source,quality=BENCHMARKS[name]
-        try:
-            d=fred(sid); latest,p1,p3,p12=changes(d)
-            cards.append((name,latest,p1,p3,p12,signal(p1,p3,p12),d.iloc[-1]["date"]))
-        except Exception:
-            cards.append((name,np.nan,np.nan,np.nan,np.nan,"Unavailable",pd.NaT))
-    cols=st.columns(len(cards))
-    for col,row in zip(cols,cards):
-        name,latest,p1,p3,p12,sig,dt=row
-        with col:
-            st.metric(name.split(" — ")[0], "—" if pd.isna(latest) else f"{latest:.1f}", None if pd.isna(p1) else f"{p1:+.1f}% latest period")
-            st.caption(f"{sig} • {'' if pd.isna(dt) else dt.strftime('%b %Y')}")
-    st.info("Indexes are best used to measure escalation and direction. They are not equivalent to a supplier's delivered $/W, $/ft, $/kW or $/project quote.")
+    pulse_names=[
+        "Steel — structural shapes/plate","Copper wire & cable","Construction labor — wages",
+        "Switchgear & switchboards","Transformers — power & distribution"
+    ]
+    cols=st.columns(len(pulse_names))
     rows=[]
-    for name,(sid,unit,source,quality) in BENCHMARKS.items():
+    for col,name in zip(cols,pulse_names):
+        sid,unit,source,freq=BENCHMARKS[name]
         try:
-            d=fred(sid); latest,p1,p3,p12=changes(d)
-            rows.append([name,latest,p1,p3,p12,signal(p1,p3,p12),d.iloc[-1]["date"].date(),quality])
+            d=fred(sid)
+            latest=d.iloc[-1]["value"]
+            lp=latest_period_change(d)
+            yoy=yoy_change(d,freq)
+            t3=three_year_change(d,freq)
+            sig=trend_label(yoy)
+            with col:
+                st.metric(name.split(" — ")[0],f"{latest:.1f}",f"{lp:+.1f}% latest period")
+                st.caption(f"{sig} • {d.iloc[-1]['date'].strftime('%b %Y')}")
+            fc_periods = forecast_horizon if freq=="monthly" else max(1,int(np.ceil(forecast_horizon/3)))
+            fc=seasonal_trend_forecast(d,freq,fc_periods)
+            f6 = pct(fc.iloc[min(len(fc)-1, 5 if freq=="monthly" else 1)]["forecast"], latest) if len(fc) else np.nan
+            f12 = pct(fc.iloc[min(len(fc)-1, 11 if freq=="monthly" else 3)]["forecast"], latest) if len(fc) else np.nan
+            rows.append([name,latest,yoy,t3,f6,f12,sig,d.iloc[-1]["date"].date()])
         except Exception:
             pass
-    pulse=pd.DataFrame(rows,columns=["Cost driver","Latest index","Latest-period %","~3-period %","~12-period %","Trend","Data through","Benchmark type"])
-    st.dataframe(pulse,use_container_width=True,hide_index=True)
+    st.info("Forecasts are model outputs from historical BLS/FRED indexes. They are not supplier quotes. Futures, where available, are shown separately.")
+    summary=pd.DataFrame(rows,columns=["Cost driver","Latest index","YoY %","3Y %","Forecast ~6M %","Forecast ~12M %","Direction","Data through"])
+    for c in ["YoY %","3Y %","Forecast ~6M %","Forecast ~12M %"]:
+        summary[c]=summary[c].round(1)
+    st.dataframe(summary,use_container_width=True,hide_index=True)
 
 with tabs[1]:
-    st.subheader("Commodity & conductor benchmarks")
-    choice=st.selectbox("Benchmark",["Steel — finished products","Steel — structural shapes/plate","Copper wire & cable"])
-    sid,unit,source,quality=BENCHMARKS[choice]
-    d=fred(sid); view=d.tail(months)
-    latest,p1,p3,p12=changes(d)
+    st.subheader("Historical actuals + forecast")
+    choice=st.selectbox("Cost driver",list(BENCHMARKS.keys()),index=1,key="hist_fc_choice")
+    sid,unit,source,freq=BENCHMARKS[choice]
+    d=fred(sid)
+    periods=forecast_horizon if freq=="monthly" else max(1,int(np.ceil(forecast_horizon/3)))
+    fc=seasonal_trend_forecast(d,freq,periods)
+    n = (12 if history_years==1 else 36 if history_years==3 else 60) if freq=="monthly" else (4 if history_years==1 else 12 if history_years==3 else 20)
+    hist=d.tail(n)
+    latest=d.iloc[-1]["value"]
+    yoy=yoy_change(d,freq)
+    t3=three_year_change(d,freq)
     a,b,c,dcol=st.columns(4)
-    a.metric("Latest",f"{latest:.2f}",f"{p1:+.1f}% latest period")
-    b.metric("~3-period change",f"{p3:+.1f}%")
-    c.metric("~12-period change",f"{p12:+.1f}%")
-    dcol.metric("Direction",signal(p1,p3,p12))
-    fig=px.line(view,x="date",y="value",markers=True,title=choice)
-    fig.update_layout(yaxis_title=unit,xaxis_title=None,hovermode="x unified")
+    a.metric("Latest index",f"{latest:.2f}")
+    b.metric("YoY change","—" if pd.isna(yoy) else f"{yoy:+.1f}%")
+    c.metric("3-year change","—" if pd.isna(t3) else f"{t3:+.1f}%")
+    f_end=pct(fc.iloc[-1]["forecast"],latest) if len(fc) else np.nan
+    dcol.metric(f"{forecast_horizon}M model change","—" if pd.isna(f_end) else f"{f_end:+.1f}%")
+
+    fig=go.Figure()
+    fig.add_trace(go.Scatter(x=hist["date"],y=hist["value"],mode="lines+markers",name="Historical actual"))
+    if len(fc):
+        fig.add_trace(go.Scatter(x=fc["date"],y=fc["upper"],mode="lines",line=dict(width=0),showlegend=False))
+        fig.add_trace(go.Scatter(x=fc["date"],y=fc["lower"],mode="lines",fill="tonexty",line=dict(width=0),name="Illustrative forecast band"))
+        fig.add_trace(go.Scatter(x=fc["date"],y=fc["forecast"],mode="lines+markers",line=dict(dash="dash"),name="Statistical forecast"))
+        fig.add_vline(x=d.iloc[-1]["date"],line_dash="dot",annotation_text="Forecast starts",annotation_position="top")
+    fig.update_layout(title=f"{choice}: history + forecast",yaxis_title=unit,xaxis_title=None,hovermode="x unified")
     st.plotly_chart(fig,use_container_width=True)
-    st.warning("Aluminum wire: the dedicated BLS/FRED aluminum-wire series ended in 2017. Do not use it as a current price signal. Add current aluminum conductor/vendor quotes in Quote Tracker; a licensed metal feed can be connected later.")
+
+    if choice.startswith("Steel") and len(cme):
+        st.markdown("#### CME HRC market forward curve")
+        fig2=px.line(cme,x="contract_month",y="last_usd_per_short_ton",markers=True)
+        fig2.update_layout(yaxis_title="USD / short ton",xaxis_title=None,hovermode="x unified")
+        st.plotly_chart(fig2,use_container_width=True)
+        st.caption("CME HRC futures are market-observed forward prices, not the same unit as the BLS steel index and not a guaranteed future spot price.")
+
+    st.warning("The forecast is a transparent statistical extrapolation based on recent trend + seasonality. Use it for planning ranges, not as a guaranteed procurement price.")
 
 with tabs[2]:
-    st.subheader("Construction labor escalation")
-    sid,unit,_,_=BENCHMARKS["Construction labor — wages"]
-    d=fred(sid); latest,p1,p3,p12=changes(d)
-    fig=px.line(d.tail(max(20,months//3)),x="date",y="value",markers=True,title="Private construction wages — Employment Cost Index")
-    fig.update_layout(yaxis_title=unit,xaxis_title=None,hovermode="x unified")
+    st.subheader("3-Year normalized comparison")
+    st.caption("All selected series are rebased to 100 at the start so you can compare percentage movement across different indexes.")
+    default_sel=["Steel — structural shapes/plate","Copper wire & cable","Construction labor — wages","Switchgear & switchboards","Transformers — power & distribution"]
+    selected=st.multiselect("Compare cost drivers",list(BENCHMARKS.keys()),default=default_sel)
+    fig=go.Figure()
+    compare_rows=[]
+    for name in selected:
+        sid,unit,source,freq=BENCHMARKS[name]
+        try:
+            d=fred(sid)
+            n=36 if freq=="monthly" else 12
+            v=d.tail(n).copy()
+            if len(v):
+                v["normalized"]=v["value"]/v.iloc[0]["value"]*100
+                fig.add_trace(go.Scatter(x=v["date"],y=v["normalized"],mode="lines",name=name))
+                compare_rows.append([name,pct(v.iloc[-1]["value"],v.iloc[0]["value"])])
+        except Exception:
+            pass
+    fig.update_layout(yaxis_title="Rebased index (start = 100)",xaxis_title=None,hovermode="x unified")
     st.plotly_chart(fig,use_container_width=True)
-    st.metric("Approx. year-over-year wage escalation",f"{p3:+.1f}%" if len(d)<13 else f"{p3:+.1f}% (rough quarterly comparison)")
-    st.caption("This is a national construction-wage benchmark. Project labor should also account for prevailing wage, union/open-shop conditions, state/region, per diem, productivity and schedule.")
+    cr=pd.DataFrame(compare_rows,columns=["Cost driver","3Y move %"]).sort_values("3Y move %",ascending=False)
+    if len(cr):
+        cr["3Y move %"]=cr["3Y move %"].round(1)
+    st.dataframe(cr,use_container_width=True,hide_index=True)
 
 with tabs[3]:
-    st.subheader("PV modules — U.S. vs non-U.S.")
-    st.info("Public indexes do not cleanly equal bankable module $/W quotes by origin. This page therefore separates market/trade context from actual vendor quotes.")
-    sid,unit,_,_=BENCHMARKS["PV/semiconductor trade context"]
+    st.subheader("Commodities")
+    choice=st.selectbox("Commodity benchmark",["Steel — finished products","Steel — structural shapes/plate","Copper wire & cable"],key="commodity")
+    sid,unit,_,freq=BENCHMARKS[choice]
     d=fred(sid)
-    fig=px.line(d.tail(months),x="date",y="value",markers=True,title="PV / photosensitive semiconductor trade-price context")
-    fig.update_layout(yaxis_title=unit,xaxis_title=None)
+    n=36 if history_years==3 else (12 if history_years==1 else 60)
+    fig=px.line(d.tail(n),x="date",y="value",markers=True,title=f"{choice} — {history_years}Y history")
+    fig.update_layout(yaxis_title=unit,xaxis_title=None,hovermode="x unified")
     st.plotly_chart(fig,use_container_width=True)
-    mq=quotes[quotes["category"].astype(str).str.lower()=="module"].copy()
-    st.data_editor(mq,use_container_width=True,hide_index=True,num_rows="dynamic")
-    st.markdown("**Recommended quote fields for production:** manufacturer, model, wattage, domestic-content status, origin, Incoterm, tariff assumptions, freight, safe-harbor/domestic-content eligibility, quote date, validity, quantity and $/Wdc.")
+    st.warning("Aluminum conductor remains quote-driven in this version because the dedicated public aluminum-wire series is stale. Add current vendor quotes in Quote Tracker.")
 
 with tabs[4]:
-    st.subheader("Inverter pricing")
-    st.warning("Electronic-component indexes are contextual proxies only; they are not utility-scale inverter prices.")
-    sid,unit,_,_=BENCHMARKS["Electronic components — inverter context"]
+    st.subheader("Construction labor escalation")
+    sid,unit,_,freq=BENCHMARKS["Construction labor — wages"]
     d=fred(sid)
-    fig=px.line(d.tail(months),x="date",y="value",markers=True,title="Electronic-component manufacturing PPI — contextual proxy")
-    fig.update_layout(yaxis_title=unit,xaxis_title=None)
+    fig=px.line(d.tail(12),x="date",y="value",markers=True,title="Construction wages — 3-year quarterly history")
+    fig.update_layout(yaxis_title=unit,xaxis_title=None,hovermode="x unified")
     st.plotly_chart(fig,use_container_width=True)
-    iq=quotes[quotes["category"].astype(str).str.lower()=="inverter"].copy()
-    st.dataframe(iq,use_container_width=True,hide_index=True)
-    st.markdown("Track actual inverter bids in **$/Wac or $/kWac**, plus manufacturer, model, quantity, transformer inclusion, MV skid inclusion, freight, warranty, lead time and quote validity.")
+    st.metric("Year-over-year labor escalation","—" if pd.isna(yoy_change(d,freq)) else f"{yoy_change(d,freq):+.1f}%")
+    st.caption("Quarterly labor data are compared QoQ and YoY rather than using monthly-period labels.")
 
 with tabs[5]:
-    st.subheader("Switchgear & transformers")
-    equip=st.selectbox("Equipment",["Switchgear & switchboards","Switchgear — excluding relays/ducts","Transformers — power & distribution"])
-    sid,unit,_,_=BENCHMARKS[equip]
-    d=fred(sid); latest,p1,p3,p12=changes(d)
-    fig=px.line(d.tail(months),x="date",y="value",markers=True,title=equip)
+    st.subheader("Modules — U.S. vs non-U.S.")
+    st.info("Actual module quote history is kept separate from broad public market indexes. Upload vendor quote history as you collect it.")
+    mq=quotes[quotes["category"].astype(str).str.lower()=="module"].copy()
+    st.data_editor(mq,use_container_width=True,hide_index=True,num_rows="dynamic")
+    sid,unit,_,freq=BENCHMARKS["PV/semiconductor trade context"]
+    d=fred(sid)
+    fig=px.line(d.tail(36),x="date",y="value",markers=True,title="PV / semiconductor trade-price context — 3 years")
     fig.update_layout(yaxis_title=unit,xaxis_title=None)
     st.plotly_chart(fig,use_container_width=True)
-    c1,c2,c3=st.columns(3); c1.metric("Latest",f"{latest:.2f}",f"{p1:+.1f}%")
-    c2.metric("~3-period",f"{p3:+.1f}%"); c3.metric("~12-period",f"{p12:+.1f}%")
-    st.caption("For project decisions, combine index escalation with actual OEM quotes and lead times. Transformer and switchgear pricing can move differently from raw steel/copper.")
 
 with tabs[6]:
+    st.subheader("Inverters")
+    st.warning("The public electronics index is context only; actual utility-scale inverter bids should be tracked in $/Wac or $/kWac.")
+    sid,unit,_,freq=BENCHMARKS["Electronic components — inverter context"]
+    d=fred(sid)
+    fig=px.line(d.tail(36),x="date",y="value",markers=True,title="Electronic components — 3-year context")
+    fig.update_layout(yaxis_title=unit,xaxis_title=None)
+    st.plotly_chart(fig,use_container_width=True)
+    st.dataframe(quotes[quotes["category"].astype(str).str.lower()=="inverter"],use_container_width=True,hide_index=True)
+
+with tabs[7]:
+    st.subheader("Gear & transformers")
+    equip=st.selectbox("Equipment",["Switchgear & switchboards","Switchgear — excluding relays/ducts","Transformers — power & distribution"],key="gear")
+    sid,unit,_,freq=BENCHMARKS[equip]
+    d=fred(sid)
+    fc=seasonal_trend_forecast(d,freq,forecast_horizon)
+    hist=d.tail(36)
+    fig=go.Figure()
+    fig.add_trace(go.Scatter(x=hist["date"],y=hist["value"],mode="lines+markers",name="Actual"))
+    if len(fc):
+        fig.add_trace(go.Scatter(x=fc["date"],y=fc["forecast"],mode="lines+markers",line=dict(dash="dash"),name="Forecast"))
+    fig.update_layout(title=f"{equip}: 3-year history + {forecast_horizon}M forecast",yaxis_title=unit,xaxis_title=None,hovermode="x unified")
+    st.plotly_chart(fig,use_container_width=True)
+
+with tabs[8]:
     st.subheader("Balance of System (BOS)")
     st.markdown("""
-Use this section as the roll-up for costs that do not belong cleanly to modules/inverters:
-- Racking / trackers / piles
-- DC wire, homeruns and connectors
-- AC cable and MV cable
+Track these as project/vendor quote histories:
+- Tracker/racking/piles
+- DC wire and connectors
+- AC cable / MV cable
 - Combiner equipment / disconnects
-- Switchboards / switchgear / relays
+- Switchgear / relays
 - Transformers
-- Conduit, trenching and duct bank
+- Conduit / trench / duct bank
 - Grounding
-- SCADA / DAS / communications
-- Weather station / metering
+- SCADA / DAS / metering
 - Fencing / gates / security
-- Roads, aggregate, drainage and civil materials
+- Roads / aggregate / drainage
 - Freight / logistics
     """)
     bos=quotes[quotes["category"].astype(str).str.lower().isin(["bos","tracker / racking","mv equipment"])].copy()
     st.dataframe(bos,use_container_width=True,hide_index=True)
 
-with tabs[7]:
+with tabs[9]:
     st.subheader("Project / portfolio cost exposure")
-    st.caption("Enter cost components as $/Wdc. The tool converts them to project dollars and shows the portfolio cost mix.")
     edited=st.data_editor(projects,use_container_width=True,hide_index=True,num_rows="dynamic")
     costcols=["modules","inverters","racking_steel","wire_copper_al","gear_transformers","labor","other_bos"]
     if len(edited):
         e=edited.copy()
-        for c in ["mw_dc"]+costcols:e[c]=pd.to_numeric(e[c],errors="coerce").fillna(0)
+        for c in ["mw_dc"]+costcols:
+            e[c]=pd.to_numeric(e[c],errors="coerce").fillna(0)
         e["total_$/Wdc"]=e[costcols].sum(axis=1)
         e["total_$"]=e["total_$/Wdc"]*e["mw_dc"]*1_000_000
         st.dataframe(e[["project","mw_dc","total_$/Wdc","total_$"]],use_container_width=True,hide_index=True)
@@ -201,30 +339,27 @@ with tabs[7]:
         st.plotly_chart(fig,use_container_width=True)
         st.download_button("Download project exposure CSV",e.to_csv(index=False).encode(),"solar_project_cost_exposure.csv","text/csv")
 
-with tabs[8]:
-    st.subheader("Vendor / market quote tracker")
-    st.caption("Use this for actual $/W, $/kW, $/ft, $/ton or lump-sum supplier pricing. Public indexes remain separate.")
+with tabs[10]:
+    st.subheader("Vendor / component quote tracker")
     edited_quotes=st.data_editor(quotes,use_container_width=True,hide_index=True,num_rows="dynamic")
     st.download_button("Download quote tracker",edited_quotes.to_csv(index=False).encode(),"component_quotes.csv","text/csv")
-    st.markdown("For better bid-leveling later, add columns for **vendor, project, quote date, valid-through date, lead time, quantity, Incoterm/freight, tariff assumption, domestic-content status and notes**.")
+    st.caption("Recommended next fields: vendor, project, quote date, valid-through date, lead time, quantity, Incoterm/freight, tariff assumption and domestic-content status.")
 
-with tabs[9]:
-    st.subheader("Data-source map")
-    source_table=pd.DataFrame([
-        ["Structural steel","BLS/FRED","WPU101704","Automatic","Public index"],
-        ["Copper wire & cable","BLS/FRED","WPU10260314","Automatic","Public index"],
-        ["Aluminum wire/cable","Vendor / licensed metals feed","—","Manual now","Dedicated BLS series is stale"],
-        ["Construction labor","BLS/FRED","ECICONWAG","Automatic","National construction wages"],
-        ["Modules — U.S.","Vendor / market quote dataset","—","Manual now","Track actual $/Wdc + domestic content"],
-        ["Modules — non-U.S.","Vendor / market quote dataset","—","Manual now","Track origin/tariff/freight"],
-        ["Inverters","Vendor quote + BLS proxy","PCU33443344","Mixed","Proxy is not inverter $/W"],
-        ["Switchgear","BLS/FRED","WPU117522","Automatic","Public equipment index"],
-        ["Transformers","BLS/FRED","WPU117409","Automatic","Public equipment index"],
-        ["BOS","Project/vendor database","—","Manual now","Project-specific cost stack"],
-        ["HRC forward curve","CME Group","HRC futures","CSV/licensed feed","Market forward pricing"],
-    ],columns=["Component","Preferred source","Series / feed","Refresh","Use"])
-    st.dataframe(source_table,use_container_width=True,hide_index=True)
-    st.info("Best practice: public indexes measure escalation; actual supplier/EPC quotes establish project pricing. Keep both and compare them.")
+with tabs[11]:
+    st.subheader("Source map")
+    st.dataframe(pd.DataFrame([
+        ["Structural steel","BLS/FRED","WPU101704","Auto","Historical + model forecast"],
+        ["Copper wire & cable","BLS/FRED","WPU10260314","Auto","Historical + model forecast"],
+        ["Construction labor","BLS/FRED","ECICONWAG","Auto","Quarterly history + model forecast"],
+        ["Switchgear","BLS/FRED","WPU117522","Auto","Historical + model forecast"],
+        ["Transformers","BLS/FRED","WPU117409","Auto","Historical + model forecast"],
+        ["HRC forward curve","CME Group","HRC futures","CSV/licensed feed","Market forward curve"],
+        ["Modules U.S./non-U.S.","Vendor quote database","—","Manual now","Actual $/Wdc history"],
+        ["Inverters","Vendor quote database","—","Manual now","Actual $/Wac or $/kWac history"],
+        ["Aluminum conductor","Vendor/licensed metal feed","—","Manual now","Actual $/ft or material quote"],
+        ["BOS","Project/vendor database","—","Manual now","Actual project pricing"],
+    ],columns=["Component","Source","Series / feed","Refresh","Use"]),use_container_width=True,hide_index=True)
+    st.caption("Public indexes are escalation benchmarks. Vendor/EPC quotes establish project-specific pricing.")
 
 st.divider()
-st.caption("Procurement planning tool. Public indexes, market futures and proxy series are not supplier quotes. Validate major procurement decisions against current vendor offers and authorized market-data sources.")
+st.caption("Planning dashboard only. Forecasts are statistical scenarios, not guaranteed commodity or equipment prices.")
