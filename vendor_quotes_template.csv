@@ -1,0 +1,7 @@
+category,subcategory,source,price,unit,note
+Module,U.S.-made,Example vendor quote,0,$/Wdc,Replace with actual quote
+Module,Non-U.S.,Example vendor quote,0,$/Wdc,Replace with actual quote
+Inverter,Utility-scale string/central,Example vendor quote,0,$/Wac,Replace with actual quote
+Tracker / racking,Project-specific,Example vendor quote,0,$/Wdc,Replace with actual quote
+MV equipment,Project-specific,Example vendor quote,0,$/project,Replace with actual quote
+BOS,Electrical BOS,Example vendor quote,0,$/Wdc,Replace with actual quote
