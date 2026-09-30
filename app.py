@@ -5,6 +5,38 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
+from datetime import date, datetime
+
+# Official 2026 BLS release calendar dates used by this dashboard.
+# PPI covers the monthly producer-price series used for steel, copper,
+# switchgear and transformers. ECI covers construction labor.
+PPI_RELEASES_2026 = [
+    date(2026, 1, 14), date(2026, 1, 30), date(2026, 2, 27),
+    date(2026, 3, 18), date(2026, 4, 14), date(2026, 5, 13),
+    date(2026, 6, 11), date(2026, 7, 15), date(2026, 8, 13),
+    date(2026, 9, 10), date(2026, 10, 15), date(2026, 11, 13),
+    date(2026, 12, 15),
+]
+ECI_RELEASES_2026 = [
+    date(2026, 2, 10), date(2026, 4, 30), date(2026, 7, 31),
+    date(2026, 10, 30),
+]
+
+def next_release_date(release_type):
+    today = date.today()
+    releases = ECI_RELEASES_2026 if release_type == "ECI" else PPI_RELEASES_2026
+    future = [d for d in releases if d >= today]
+    return future[0] if future else None
+
+def fmt_release(d):
+    return d.strftime("%b %d, %Y") + " • 8:30 AM ET" if d else "Schedule pending"
+
+def fmt_observation(d):
+    try:
+        return pd.to_datetime(d).strftime("%b %Y")
+    except Exception:
+        return str(d)
+
 import streamlit as st
 
 st.set_page_config(page_title="Solar EPC Cost Intelligence V3", page_icon="☀️", layout="wide")
@@ -125,7 +157,7 @@ def parse_cme(uploaded):
         d["volume"]=pd.to_numeric(d["volume"],errors="coerce")
     return d.dropna(subset=["contract_month","last_usd_per_short_ton"]).sort_values("contract_month")
 
-st.title("Solar EPC Cost & Commodity Intelligence — V3.1")
+st.title("Solar EPC Cost & Commodity Intelligence — V3.2")
 st.caption("Three-year history, forecast scenarios, forward pricing, vendor quotes and project exposure for solar preconstruction.")
 
 with st.sidebar:
@@ -153,6 +185,13 @@ tabs=st.tabs([
 with tabs[0]:
     st.subheader("Market pulse")
     st.caption("Values below are BLS/FRED index levels, not dollars. Percentage figures show changes in those indexes. CME HRC is displayed separately in USD/short ton.")
+    ppi_next = next_release_date("PPI")
+    eci_next = next_release_date("ECI")
+    st.info(
+        f"Expected source updates — PPI-based cost drivers: {fmt_release(ppi_next)} | "
+        f"Construction labor (ECI): {fmt_release(eci_next)}. "
+        "FRED posting can follow the BLS release; the app refreshes its source data automatically."
+    )
     pulse_names=[
         "Steel — structural shapes/plate","Copper wire & cable","Construction labor — wages",
         "Switchgear & switchboards","Transformers — power & distribution"
@@ -179,7 +218,7 @@ with tabs[0]:
         except Exception:
             pass
     st.info("Forecasts are model outputs from historical BLS/FRED indexes. They are not supplier quotes. Futures, where available, are shown separately.")
-    summary=pd.DataFrame(rows,columns=["Cost driver","Latest index","YoY %","3Y %","Forecast ~6M %","Forecast ~12M %","Direction","Data through"])
+    summary=pd.DataFrame(rows,columns=["Cost driver","Latest index","YoY %","3Y %","Forecast ~6M %","Forecast ~12M %","Direction","Latest observation"])
     for c in ["YoY %","3Y %","Forecast ~6M %","Forecast ~12M %"]:
         summary[c]=summary[c].round(1)
     st.dataframe(summary,use_container_width=True,hide_index=True)
@@ -366,7 +405,7 @@ with tabs[11]:
         ["Aluminum conductor","Vendor/licensed metal feed","—","Manual now","Actual $/ft or material quote"],
         ["BOS","Project/vendor database","—","Manual now","Actual project pricing"],
     ],columns=["Component","Source","Series / feed","Refresh","Use"]),use_container_width=True,hide_index=True)
-    st.caption("Public indexes are escalation benchmarks. Vendor/EPC quotes establish project-specific pricing.")
+    st.caption("Public indexes are escalation benchmarks. Vendor/EPC quotes establish project-specific pricing. BLS PPI release dates drive the expected-update date for steel, copper, switchgear and transformers; ECI release dates drive construction labor.")
 
 st.divider()
 st.caption("Units: BLS/FRED series = index levels; CME HRC = USD/short ton; modules = $/Wdc; inverters = $/Wac or $/kWac; project cost stack = $/Wdc. Forecasts are statistical planning scenarios, not guaranteed prices.")
