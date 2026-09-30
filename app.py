@@ -157,7 +157,7 @@ def parse_cme(uploaded):
         d["volume"]=pd.to_numeric(d["volume"],errors="coerce")
     return d.dropna(subset=["contract_month","last_usd_per_short_ton"]).sort_values("contract_month")
 
-st.title("Solar EPC Cost & Commodity Intelligence — V3.2")
+st.title("Solar EPC Cost & Commodity Intelligence — V3.4")
 st.caption("Three-year history, forecast scenarios, forward pricing, vendor quotes and project exposure for solar preconstruction.")
 
 with st.sidebar:
@@ -207,19 +207,30 @@ with tabs[0]:
             yoy=yoy_change(d,freq)
             t3=three_year_change(d,freq)
             sig=trend_label(yoy)
+            period_label = "QoQ" if freq == "quarterly" else "MoM"
             with col:
-                st.metric(name.split(" — ")[0],f"{latest:.1f}",f"{lp:+.1f}% latest period")
-                st.caption(f"{sig} • {d.iloc[-1]['date'].strftime('%b %Y')}")
+                st.metric(name.split(" — ")[0], f"{latest:.1f}", f"{lp:+.1f}% {period_label}")
+                st.caption(f"Latest observation: {d.iloc[-1]['date'].strftime('%b %Y')}")
             fc_periods = forecast_horizon if freq=="monthly" else max(1,int(np.ceil(forecast_horizon/3)))
             fc=seasonal_trend_forecast(d,freq,fc_periods)
             f6 = pct(fc.iloc[min(len(fc)-1, 5 if freq=="monthly" else 1)]["forecast"], latest) if len(fc) else np.nan
             f12 = pct(fc.iloc[min(len(fc)-1, 11 if freq=="monthly" else 3)]["forecast"], latest) if len(fc) else np.nan
-            rows.append([name,latest,yoy,t3,f6,f12,sig,d.iloc[-1]["date"].date()])
+            rows.append([
+                name, latest, yoy, t3, f6, f12,
+                d.iloc[-1]["date"].strftime("%b %Y")
+            ])
         except Exception:
             pass
     st.info("Forecasts are model outputs from historical BLS/FRED indexes. They are not supplier quotes. Futures, where available, are shown separately.")
-    summary=pd.DataFrame(rows,columns=["Cost driver","Latest index","YoY %","3Y %","Forecast ~6M %","Forecast ~12M %","Direction","Latest observation"])
-    for c in ["YoY %","3Y %","Forecast ~6M %","Forecast ~12M %"]:
+    st.caption("MoM = month-over-month; QoQ = quarter-over-quarter. Historical 3Y % = actual change in the published index over the prior three years; it is not a forecast.")
+    summary=pd.DataFrame(
+        rows,
+        columns=[
+            "Cost driver","Latest index","YoY %","Historical 3Y %",
+            "Forecast ~6M %","Forecast ~12M %","Latest observation"
+        ]
+    )
+    for c in ["YoY %","Historical 3Y %","Forecast ~6M %","Forecast ~12M %"]:
         summary[c]=summary[c].round(1)
     st.dataframe(summary,use_container_width=True,hide_index=True)
 
