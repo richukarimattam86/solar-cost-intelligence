@@ -42,7 +42,7 @@ def fmt_observation(d):
 
 import streamlit as st
 
-st.set_page_config(page_title="Solar EPC Cost Intelligence V3", page_icon="☀️", layout="wide")
+st.set_page_config(page_title="Solar EPC Cost Intelligence", page_icon="☀️", layout="wide")
 
 BENCHMARKS = {
     "Steel — finished products": ("WPUSISTEEL2", "Index 1982=100", "BLS/FRED", "monthly"),
@@ -218,7 +218,7 @@ with tabs[0]:
             fc=seasonal_trend_forecast(d,freq,fc_periods)
             f6 = pct(fc.iloc[min(len(fc)-1, 5 if freq=="monthly" else 1)]["forecast"], latest) if len(fc) else np.nan
             f12 = pct(fc.iloc[min(len(fc)-1, 11 if freq=="monthly" else 3)]["forecast"], latest) if len(fc) else np.nan
-            release_type = meta.get("release_type", "PPI")
+            release_type = "ECI" if freq == "quarterly" else "PPI"
             next_update = next_release_date(release_type)
             rows.append([
                 name, latest, yoy, t3, f6, f12,
