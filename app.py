@@ -31,6 +31,9 @@ def next_release_date(release_type):
 def fmt_release(d):
     return d.strftime("%b %d, %Y") + " • 8:30 AM ET" if d else "Schedule pending"
 
+def fmt_release_date(d):
+    return d.strftime("%b %d, %Y") if d else "Schedule pending"
+
 def fmt_observation(d):
     try:
         return pd.to_datetime(d).strftime("%b %Y")
@@ -157,8 +160,8 @@ def parse_cme(uploaded):
         d["volume"]=pd.to_numeric(d["volume"],errors="coerce")
     return d.dropna(subset=["contract_month","last_usd_per_short_ton"]).sort_values("contract_month")
 
-st.title("Solar EPC Cost & Commodity Intelligence — V3.4")
-st.caption("Three-year history, forecast scenarios, forward pricing, vendor quotes and project exposure for solar preconstruction.")
+st.title("Solar EPC Cost & Commodity Intelligence")
+st.caption("Historical pricing, forecast scenarios, forward pricing, vendor quotes and project exposure for solar preconstruction.")
 
 with st.sidebar:
     st.header("Dashboard controls")
@@ -215,22 +218,25 @@ with tabs[0]:
             fc=seasonal_trend_forecast(d,freq,fc_periods)
             f6 = pct(fc.iloc[min(len(fc)-1, 5 if freq=="monthly" else 1)]["forecast"], latest) if len(fc) else np.nan
             f12 = pct(fc.iloc[min(len(fc)-1, 11 if freq=="monthly" else 3)]["forecast"], latest) if len(fc) else np.nan
+            release_type = meta.get("release_type", "PPI")
+            next_update = next_release_date(release_type)
             rows.append([
                 name, latest, yoy, t3, f6, f12,
-                d.iloc[-1]["date"].strftime("%b %Y")
+                d.iloc[-1]["date"].strftime("%b %Y"),
+                fmt_release_date(next_update)
             ])
         except Exception:
             pass
     st.info("Forecasts are model outputs from historical BLS/FRED indexes. They are not supplier quotes. Futures, where available, are shown separately.")
-    st.caption("MoM = month-over-month; QoQ = quarter-over-quarter. Historical 3Y % = actual change in the published index over the prior three years; it is not a forecast.")
+    st.caption("MoM = month-over-month; QoQ = quarter-over-quarter. Historical YoY % and Historical 3Y % are actual changes in the published indexes; they are not forecasts.")
     summary=pd.DataFrame(
         rows,
         columns=[
-            "Cost driver","Latest index","YoY %","Historical 3Y %",
-            "Forecast ~6M %","Forecast ~12M %","Latest observation"
+            "Cost driver","Latest index level","Historical YoY %","Historical 3Y %",
+            "6M Forecast %","12M Forecast %","Latest observation","Next expected update"
         ]
     )
-    for c in ["YoY %","Historical 3Y %","Forecast ~6M %","Forecast ~12M %"]:
+    for c in ["Historical YoY %","Historical 3Y %","6M Forecast %","12M Forecast %"]:
         summary[c]=summary[c].round(1)
     st.dataframe(summary,use_container_width=True,hide_index=True)
 
@@ -248,7 +254,7 @@ with tabs[1]:
     yoy=yoy_change(d,freq)
     t3=three_year_change(d,freq)
     a,b,c,dcol=st.columns(4)
-    a.metric("Latest index",f"{latest:.2f}")
+    a.metric("Latest index level",f"{latest:.2f}")
     b.metric("YoY change","—" if pd.isna(yoy) else f"{yoy:+.1f}%")
     c.metric("3-year change","—" if pd.isna(t3) else f"{t3:+.1f}%")
     f_end=pct(fc.iloc[-1]["forecast"],latest) if len(fc) else np.nan
