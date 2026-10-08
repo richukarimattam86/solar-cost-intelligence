@@ -182,7 +182,7 @@ except Exception as e:
 tabs=st.tabs([
     "Executive dashboard","History + forecast","Historical comparison",
     "Commodities","Labor","Modules","Inverters","Gear & transformers",
-    "BOS","Project exposure","Quote tracker","Sources"
+    "BOS","Project exposure","Quote tracker","Sources","New commodities"
 ])
 
 with tabs[0]:
@@ -426,3 +426,9 @@ with tabs[11]:
 
 st.divider()
 st.caption("Units: BLS/FRED series = index levels; CME HRC = USD/short ton; modules = $/Wdc; inverters = $/Wac or $/kWac; project cost stack = $/Wdc. Forecasts are statistical planning scenarios, not guaranteed prices.")
+
+
+# v3.7: expanded commodity pricing and procurement scenarios
+from commodity_expansion import render_expanded_commodities
+with tabs[12]:
+    render_expanded_commodities(history_years, forecast_horizon)
