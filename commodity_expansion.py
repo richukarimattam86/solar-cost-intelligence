@@ -11,6 +11,9 @@ import requests
 import streamlit as st
 
 SERIES = {
+    "Steel — finished products": ("WPUSISTEEL2", "PPI index", "BLS/FRED"),
+    "Steel — structural shapes/plate": ("WPU101704", "PPI index", "BLS/FRED"),
+    "Copper wire & cable": ("WPU10260314", "PPI index", "BLS/FRED"),
     "Steel — iron and steel": ("WPU101", "PPI index", "BLS/FRED"),
     "Silicon — silicon metal": (None, "USD / metric ton", "Upload benchmark CSV"),
     "Silicon — polysilicon": (None, "USD / kg", "Upload benchmark CSV"),
@@ -57,7 +60,7 @@ def make_forecast(data, months, annual_growth, uncertainty):
     return pd.DataFrame({"date": dates, "base": base, "lower": lower, "upper": upper})
 
 def render_expanded_commodities(history_years=3, forecast_horizon=12):
-    st.subheader("Additional commodity indices & battery costs")
+    st.subheader("Commodities — historical indexes & forecast scenarios")
     st.caption("Live public BLS/FRED history where available; uploaded benchmarks for silicon and LFP/NMC. The curves ahead are adjustable procurement scenarios, not observed futures prices.")
     choice = st.selectbox("Commodity", list(SERIES), key="expanded_commodity")
     series_id, unit, source = SERIES[choice]

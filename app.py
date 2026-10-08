@@ -160,7 +160,7 @@ def parse_cme(uploaded):
         d["volume"]=pd.to_numeric(d["volume"],errors="coerce")
     return d.dropna(subset=["contract_month","last_usd_per_short_ton"]).sort_values("contract_month")
 
-st.title("Solar EPC Cost & Commodity Intelligence")
+st.title("Solar EPC Cost & Commodity Intelligence v3.7")
 st.caption("Historical pricing, forecast scenarios, forward pricing, vendor quotes and project exposure for solar preconstruction.")
 
 with st.sidebar:
@@ -182,7 +182,7 @@ except Exception as e:
 tabs=st.tabs([
     "Executive dashboard","History + forecast","Historical comparison",
     "Commodities","Labor","Modules","Inverters","Gear & transformers",
-    "BOS","Project exposure","Quote tracker","Sources","New commodities"
+    "BOS","Project exposure","Quote tracker","Sources"
 ])
 
 with tabs[0]:
@@ -307,15 +307,8 @@ with tabs[2]:
     st.dataframe(cr,use_container_width=True,hide_index=True)
 
 with tabs[3]:
-    st.subheader("Commodities")
-    choice=st.selectbox("Commodity benchmark",["Steel — finished products","Steel — structural shapes/plate","Copper wire & cable"],key="commodity")
-    sid,unit,_,freq=BENCHMARKS[choice]
-    d=fred(sid)
-    n=36 if history_years==3 else (12 if history_years==1 else 60)
-    fig=px.line(d.tail(n),x="date",y="value",markers=True,title=f"{choice} — {history_years}Y history")
-    fig.update_layout(yaxis_title=unit,xaxis_title=None,hovermode="x unified")
-    st.plotly_chart(fig,use_container_width=True)
-    st.warning("Aluminum conductor remains quote-driven in this version because the dedicated public aluminum-wire series is stale. Add current vendor quotes in Quote Tracker.")
+    from commodity_expansion import render_expanded_commodities
+    render_expanded_commodities(history_years, forecast_horizon)
 
 with tabs[4]:
     st.subheader("Construction labor escalation")
@@ -428,7 +421,3 @@ st.divider()
 st.caption("Units: BLS/FRED series = index levels; CME HRC = USD/short ton; modules = $/Wdc; inverters = $/Wac or $/kWac; project cost stack = $/Wdc. Forecasts are statistical planning scenarios, not guaranteed prices.")
 
 
-# v3.7: expanded commodity pricing and procurement scenarios
-from commodity_expansion import render_expanded_commodities
-with tabs[12]:
-    render_expanded_commodities(history_years, forecast_horizon)
